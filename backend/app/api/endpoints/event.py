@@ -1,0 +1,519 @@
+import logging
+from datetime import UTC, datetime
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+
+from app.api.endpoints.user import get_current_admin, get_current_user
+from app.models.event import event_model
+from app.models.organization import org_model
+from app.models.registration import registration_model
+from app.schemas.event import CreateEventRequest, Event, EventStatus, UpdateEventRequest
+from app.schemas.s3 import PresignedUrlResponse
+from app.schemas.user import User, UserType
+from app.services.event import event_service
+from app.services.geocoding import geocoding_service
+from app.services.s3 import s3_service
+from app.services.similarity_computation import similarity_computation_service
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.get("/all", response_model=list[Event])
+async def get_events(
+    # Search term
+    q: Annotated[str | None, Query(description="Search term (name, description, keywords)")] = None,
+    # Sort filters
+    sort_by: Annotated[
+        Literal[
+            "been_before",
+            "new_additions",
+            "coins_low_to_high",
+            "coins_high_to_low",
+            "distance",
+            "start_date_time",
+            "name",
+            "coins",
+            "max_volunteers",
+            "created_at",
+            "recommendations",
+        ],
+        Query(description="Sort order for events"),
+    ] = None,
+    sort_dir: Annotated[Literal["asc", "desc"], Query(description="Sort direction")] = "desc",
+    statuses: Annotated[
+        list[EventStatus] | None, Query(description="Allowed event statuses")
+    ] = None,
+    organization_id: Annotated[str | None, Query(description="Filter by organization ID")] = None,
+    # Age filter
+    age: Annotated[
+        int | None, Query(ge=0, description="User age for eligibility filtering")
+    ] = None,
+    # Pagination
+    page: Annotated[int, Query(ge=1, description="Page number")] = 1,
+    limit: Annotated[int, Query(ge=1, le=200, description="Items per page")] = 200,
+    # Cause filters (pick up to 5)
+    causes: Annotated[
+        list[
+            Literal[
+                "Animals",
+                "Arts & Culture",
+                "Climate Change",
+                "Community",
+                "Disability",
+                "Disaster Relief",
+                "Education",
+                "Food Security",
+                "Health & Medicine",
+                "Human Rights",
+                "Mental Health",
+                "Poverty",
+                "Research",
+                "Seniors & Retirement",
+            ]
+        ]
+        | None,
+        Query(description="Filter by causes (max 5)", max_length=5),
+    ] = None,
+    # Qualification filters
+    qualifications: Annotated[
+        list[
+            Literal[
+                "Club Leader/Member",
+                "Camp Counselor",
+                "Event Volunteer/Organizer",
+                "Environment Project",
+                "First Aid Certified",
+                "Food Safety Certified",
+                "Google/Microsoft Tools",
+                "Graphic Design",
+                "Lifeguard Certified",
+                "STEM or Robotics",
+                "Student Council",
+            ]
+        ]
+        | None,
+        Query(description="Filter by required qualifications"),
+    ] = None,
+    # Availability filters (days and times)
+    availability_days: Annotated[
+        list[
+            Literal[
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+            ]
+        ]
+        | None,
+        Query(description="Filter by available days"),
+    ] = None,
+    availability_start_time: Annotated[
+        str | None,
+        Query(
+            description="Start time for availability (HH:MM format, 24-hour)",
+            pattern=r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+        ),
+    ] = None,
+    availability_end_time: Annotated[
+        str | None,
+        Query(
+            description="End time for availability (HH:MM format, 24-hour)",
+            pattern=r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+        ),
+    ] = None,
+    # Location filter
+    location_city: Annotated[str | None, Query(description="City name for location filter")] = None,
+    location_state: Annotated[
+        str | None, Query(description="State abbreviation for location filter")
+    ] = None,
+    location_radius_km: Annotated[
+        float | None, Query(ge=0, le=500, description="Radius in kilometers")
+    ] = None,
+    lat: Annotated[float | None, Query(ge=-90, le=90, description="Latitude")] = None,
+    lng: Annotated[float | None, Query(ge=-180, le=180, description="Longitude")] = None,
+    # Volunteer ID for "been before" filter
+    volunteer_id: Annotated[
+        str | None, Query(description="Volunteer ID for 'been before' or 'recommendations' filter")
+    ] = None,
+) -> list[Event]:
+    # If city/state provided but no lat/lng, geocode the location
+    if (location_city or location_state) and not (lat and lng):
+        if location_city and location_state:
+            address = f"{location_city}, {location_state}"
+        elif location_city:
+            address = location_city
+        else:
+            address = location_state
+        try:
+            location = await geocoding_service.location_to_coordinates(address)
+            lat = location.coordinates[1]
+            lng = location.coordinates[0]
+        except HTTPException as e:
+            # If geocoding fails, inform the user by re-raising the exception
+            raise e
+
+    # If geocoding succeeded and radius is missing, set a sensible default (e.g., 25 km)
+    if (lat is not None and lng is not None) and location_radius_km is None:
+        location_radius_km = 25
+    # Get volunteer events if needed for "been before" filter
+    volunteer_event_ids: set[str] | None = None
+
+    if sort_by == "recommendations":
+        if volunteer_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail='volunteer_id must be provided when sort_by="recommendations"',
+            )
+
+        return await event_service.get_all_events_with_recommendations(
+            volunteer_id=volunteer_id,
+            q=q,
+            sort_dir=sort_dir,
+            statuses=statuses,
+            organization_id=organization_id,
+            age=age,
+            page=page,
+            limit=limit,
+            causes=causes,
+            qualifications=qualifications,
+            availability_days=availability_days,
+            availability_start_time=availability_start_time,
+            availability_end_time=availability_end_time,
+            location_radius_km=location_radius_km,
+            lat=lat,
+            lng=lng,
+        )
+
+    if sort_by == "been_before" and volunteer_id:
+        volunteer_events = await registration_model.get_events_by_volunteer(volunteer_id, None)
+        volunteer_event_ids = {event.id for event in volunteer_events}
+
+    return await event_model.get_all_events(
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        statuses=statuses,
+        organization_id=organization_id,
+        age=age,
+        page=page,
+        limit=limit,
+        causes=causes,
+        qualifications=qualifications,
+        availability_days=availability_days,
+        availability_start_time=availability_start_time,
+        availability_end_time=availability_end_time,
+        location_radius_km=location_radius_km,
+        lat=lat,
+        lng=lng,
+        volunteer_event_ids=volunteer_event_ids,
+    )
+
+
+@router.get("/organization/{organization_id}", response_model=list[Event])
+async def get_events_by_org(organization_id: str) -> list[Event]:
+    event_list = await event_model.get_events_by_organization(organization_id)
+    return event_list
+
+
+@router.get("/search", response_model=list[Event])
+async def search_events(
+    q: Annotated[str | None, Query(description="Search term (name, description, keywords)")] = None,
+    sort_by: Annotated[
+        Literal["start_date_time", "name", "coins", "max_volunteers", "created_at", "distance"],
+        Query(),
+    ] = "start_date_time",
+    sort_dir: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    statuses: Annotated[
+        list[EventStatus] | None, Query(description="Allowed event statuses")
+    ] = None,
+    organization_id: Annotated[str | None, Query()] = None,
+    age: Annotated[
+        int | None, Query(ge=0, description="User age for eligibility filtering")
+    ] = None,
+    lat: Annotated[float | None, Query(ge=-90, le=90)] = None,
+    lng: Annotated[float | None, Query(ge=-180, le=180)] = None,
+    distance_km: Annotated[float | None, Query(gt=0, le=500)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+) -> list[Event]:
+    returned_events = await event_model.search_events(
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        statuses=statuses,
+        organization_id=organization_id,
+        age=age,
+        lat=lat,
+        lng=lng,
+        distance_km=distance_km,
+        page=page,
+        limit=limit,
+    )
+    return returned_events
+
+
+@router.post("/new", response_model=Event)
+async def create_event(
+    event: Annotated[CreateEventRequest, Body(...)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Event:
+    if current_user.user_type not in [UserType.ORGANIZATION, UserType.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only users with organization role can create an event",
+        )
+    # Non-admins must be associated to an approved organization
+    if current_user.user_type != UserType.ADMIN:
+        if current_user.entity_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You must be associated with an organization to create an event",
+            )
+        organization = await org_model.get_organization_by_id(current_user.entity_id)
+        if organization.status != EventStatus.APPROVED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your organization is not approved to create events",
+            )
+
+    if not event.address or not event.address.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Address is required to create an event",
+        )
+
+    try:
+        coordinates = await geocoding_service.location_to_coordinates(event.address)
+    except HTTPException as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Invalid address: {e.detail}. Please provide a valid address that can be geocoded."
+            ),
+        ) from e
+
+    ai_difficulty_coefficient = await event_service.estimate_event_difficulty(
+        event.description or ""
+    )
+
+    created_event = await event_service.create_event(
+        event,
+        current_user.id,
+        current_user.entity_id,
+        coordinates,
+        ai_difficulty_coefficient=ai_difficulty_coefficient,
+    )
+
+    if created_event.status == EventStatus.PUBLISHED and created_event.id:
+        try:
+            import asyncio
+
+            asyncio.create_task(
+                similarity_computation_service.compute_similarities_for_event(created_event.id)
+            )
+            logger.info(f"Triggered similarity computation for new event {created_event.id}")
+        except Exception as e:
+            logger.error(f"Failed to trigger similarity computation: {e}")
+
+    return created_event
+
+
+@router.delete("/clear", response_model=None)
+async def clear_events(
+    current_user: Annotated[User, Depends(get_current_admin)],
+) -> None:
+    return await event_model.delete_all_events()
+
+
+@router.get("/{event_id}", response_model=Event)
+async def get_event_by_id(event_id: str) -> Event:
+    event = await event_model.get_event_by_id(event_id)
+
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return event
+
+
+@router.put("/{event_id}", response_model=Event | None)
+async def update_event(
+    event_id: str,
+    event: Annotated[UpdateEventRequest, Body(...)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Event | None:
+    if current_user.user_type not in [UserType.ORGANIZATION, UserType.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only users with organization role can create an event",
+        )
+
+    if current_user.entity_id is None and current_user.user_type != UserType.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be associated with an organization to create an event",
+        )
+    # Admins can bypass org authorization
+    if current_user.user_type != UserType.ADMIN:
+        await event_service.authorize_org(event_id, current_user.entity_id)
+
+    old_event = await event_model.get_event_by_id(event_id)
+    old_status = old_event.status if old_event else None
+
+    # If address is provided, geocode it and update location
+    location = None
+    if event.address:
+        if not event.address.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Address cannot be empty",
+            )
+        try:
+            location = await geocoding_service.location_to_coordinates(event.address)
+        except HTTPException as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid address: {e.detail}. "
+                    "Please provide a valid address that can be geocoded."
+                ),
+            ) from e
+
+    updated_event = await event_service.update_event(event_id, event, location)
+
+    if updated_event and updated_event.id:
+        new_status = updated_event.status
+        should_recompute = (
+            old_status != EventStatus.PUBLISHED and new_status == EventStatus.PUBLISHED
+        ) or (new_status == EventStatus.PUBLISHED and event.tags is not None)
+
+        if should_recompute:
+            try:
+                import asyncio
+
+                asyncio.create_task(
+                    similarity_computation_service.compute_similarities_for_event(updated_event.id)
+                )
+                logger.info(
+                    f"Triggered similarity computation for updated event {updated_event.id}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger similarity computation: {e}")
+
+    return updated_event
+
+
+@router.delete("/{event_id}", response_model=None)
+async def clear_event_by_id(
+    event_id: str, current_user: Annotated[User, Depends(get_current_user)]
+) -> None:
+    if current_user.user_type not in [UserType.ORGANIZATION, UserType.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only users with organization role can delete an event",
+        )
+
+    if current_user.entity_id is None and current_user.user_type != UserType.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be associated with an organization to delete an event",
+        )
+    # Admins can bypass org authorization
+    if current_user.user_type != UserType.ADMIN:
+        await event_service.authorize_org(event_id, current_user.entity_id)
+    return await event_model.delete_event_by_id(event_id)
+
+
+# Generate a pre-signed URL for an event image and store the S3 key in MongoDB
+@router.get("/{event_id}/upload-url", response_model=PresignedUrlResponse)
+async def get_event_upload_url(
+    event_id: str,
+    filename: str,
+    filetype: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    if current_user.user_type not in [UserType.ORGANIZATION, UserType.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only users with organization role can upload an event image",
+        )
+
+    if current_user.entity_id is None and current_user.user_type != UserType.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be associated with an organization to upload an event image",
+        )
+
+    # Generate the pre-signed URL
+    url, new_s3_key = s3_service.generate_presigned_url(
+        filename, content_type=filetype, dir_prefix=f"events/{event_id}"
+    )
+
+    # Update the MongoDB document with the S3 key
+    updated = await event_service.update_event_image(event_id, new_s3_key, current_user.entity_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    return PresignedUrlResponse(
+        upload_url=url,
+        file_url=new_s3_key,
+    )
+
+
+# Get an event image via a pre-signed URL
+@router.get("/{event_id}/image")
+async def get_event_image(event_id: str):
+    event = await event_model.get_event_by_id(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Image not found")
+    file_type = event.image_s3_key.split(".")[-1]
+    presigned_url = s3_service.get_presigned_url(
+        event.image_s3_key, content_type=f"image/{file_type}"
+    )
+    return {"url": presigned_url}
+
+
+@router.get("/{event_id}/generate-qr-codes")
+async def get_event_qr_codes(
+    event_id: str, current_user: Annotated[User, Depends(get_current_user)]
+):
+    event = await event_model.get_event_by_id(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    if current_user.user_type not in [UserType.ORGANIZATION, UserType.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only users with organization role can get an event qr code",
+        )
+
+    if event.status != EventStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only generate QR codes for approved events",
+        )
+
+    if event.check_in_qr_token is not None and event.check_in_qr_token is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="QR codes have already been generated for this event",
+        )
+
+    # convert it to UTC format
+    current_time = datetime.now(UTC)
+
+    if current_time > event.end_date_time:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can't create a QR code for a completed event",
+        )
+
+    if current_user.user_type != UserType.ADMIN:
+        await event_service.authorize_org(event_id, current_user.entity_id)
+
+    return await event_service.get_event_qr_codes(event)

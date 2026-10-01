@@ -1,0 +1,161 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light;
+  color: #1d0f48;
+  background-color: #fffdfa;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --radius: 0.625rem;
+
+  /* KARP Color Scheme */
+  --karp-background: #fffdfa;
+  --karp-font: #1d0f48;
+  --karp-primary: #34a5e4;
+  --karp-orange: #f7581f;
+  --karp-yellow: #feb83c;
+  --karp-green: #2b5213;
+
+  /* Theme variables using KARP colors */
+  --background: var(--karp-background);
+  --foreground: var(--karp-font);
+  --card: var(--karp-background);
+  --card-foreground: var(--karp-font);
+  --popover: var(--karp-background);
+  --popover-foreground: var(--karp-font);
+  --primary: var(--karp-primary);
+  --primary-foreground: #ffffff;
+  --secondary: var(--karp-orange);
+  --secondary-foreground: #ffffff;
+  --muted: #f5f5f5;
+  --muted-foreground: #6b7280;
+  --accent: var(--karp-yellow);
+  --accent-foreground: var(--karp-font);
+  --destructive: var(--karp-orange);
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: var(--karp-primary);
+  --chart-1: var(--karp-primary);
+  --chart-2: var(--karp-orange);
+  --chart-3: var(--karp-yellow);
+  --chart-4: var(--karp-green);
+  --chart-5: #6b7280;
+  --sidebar: var(--karp-background);
+  --sidebar-foreground: var(--karp-font);
+  --sidebar-primary: var(--karp-primary);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--karp-background);
+  --sidebar-accent-foreground: var(--karp-font);
+  --sidebar-border: #e5e7eb;
+  --sidebar-ring: var(--karp-primary);
+}
+
+a {
+  font-weight: 500;
+  color: var(--karp-primary);
+  text-decoration: inherit;
+}
+a:hover {
+  color: var(--karp-orange);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #f9f9f9;
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+button:hover {
+  border-color: #646cff;
+}
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+/* Removed system theme detection */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* KARP Custom Colors */
+  --color-karp-background: var(--karp-background);
+  --color-karp-font: var(--karp-font);
+  --color-karp-primary: var(--karp-primary);
+  --color-karp-orange: var(--karp-orange);
+  --color-karp-yellow: var(--karp-yellow);
+  --color-karp-green: var(--karp-green);
+
+  /* Theme colors */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* Removed dark theme CSS variables */
+
+@layer base {
+  * {
+    @apply border-karp-font/20 outline-karp-primary/50;
+  }
+  body {
+    @apply bg-karp-background text-karp-font;
+  }
+}

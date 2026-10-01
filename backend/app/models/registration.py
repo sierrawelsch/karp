@@ -1,0 +1,152 @@
+from datetime import datetime
+
+from bson import ObjectId
+from fastapi import HTTPException, status
+from motor.motor_asyncio import AsyncIOMotorCollection  # noqa: TCH002
+
+from app.database.mongodb import db
+from app.models.event import event_model
+from app.schemas.event import Event
+from app.schemas.registration import CreateRegistrationRequest, Registration, RegistrationStatus
+
+
+class RegistrationModel:
+    _instance: "RegistrationModel" = None
+
+    def __init__(self):
+        if RegistrationModel._instance is not None:
+            raise Exception("This class is a singleton!")
+        self.registrations: AsyncIOMotorCollection = db["registrations"]
+
+    @classmethod
+    def get_instance(cls) -> "RegistrationModel":
+        if RegistrationModel._instance is None:
+            RegistrationModel._instance = cls()
+        return RegistrationModel._instance
+
+    async def create_indexes(self) -> None:
+        try:
+            await self.registrations.create_index([("volunteer_id", 1), ("registration_status", 1)])
+        except Exception:
+            pass
+
+    async def get_volunteers_by_event(self, event_id: str) -> list[Registration]:
+        event = await event_model.get_event_by_id(event_id)
+        if not event:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+        registrations = await self.registrations.find(
+            {"event_id": ObjectId(event_id), "registration_status": RegistrationStatus.UPCOMING}
+        ).to_list(length=None)
+        return [Registration(**doc) for doc in registrations]
+
+    async def get_events_by_volunteer(
+        self, volunteer_id: str, status: RegistrationStatus | None
+    ) -> list[Event]:
+        match_stage: dict = {"volunteer_id": ObjectId(volunteer_id)}
+        if status is not None:
+            match_stage["registration_status"] = status
+
+        pipeline = [
+            {"$match": match_stage},
+            {
+                "$lookup": {
+                    "from": "events",
+                    "localField": "event_id",
+                    "foreignField": "_id",
+                    "as": "event_docs",
+                }
+            },
+            {"$unwind": "$event_docs"},
+            {"$replaceRoot": {"newRoot": "$event_docs"}},
+        ]
+        event_docs = await self.registrations.aggregate(pipeline).to_list(length=None)
+        return [Event(**event) for event in event_docs]
+
+    async def create_registration(
+        self, registration: CreateRegistrationRequest, volunteer_id: str
+    ) -> Registration:
+        event_obj_id = ObjectId(registration.event_id)
+        volunteer_obj_id = ObjectId(volunteer_id)
+
+        existing = await self.registrations.find_one(
+            {"event_id": event_obj_id, "volunteer_id": volunteer_obj_id}
+        )
+
+        if existing:
+            await self.registrations.update_one(
+                {"_id": existing["_id"]},
+                {
+                    "$set": {
+                        "registration_status": RegistrationStatus.UPCOMING,
+                        "registered_at": datetime.now(),
+                    }
+                },
+            )
+            updated_doc = await self.registrations.find_one({"_id": existing["_id"]})
+            return Registration(**updated_doc)
+
+        registration_data = {
+            "event_id": event_obj_id,
+            "volunteer_id": volunteer_obj_id,
+            "registered_at": datetime.now(),
+            "registration_status": RegistrationStatus.UPCOMING,
+            "clocked_in": None,
+            "clocked_out": None,
+        }
+
+        result = await self.registrations.insert_one(registration_data)
+        inserted_doc = await self.registrations.find_one({"_id": result.inserted_id})
+
+        return Registration(**inserted_doc)
+
+    async def unregister_registration(
+        self, registration_id: str, volunteer_id: str
+    ) -> Registration:
+        registration = await self.registrations.find_one({"_id": ObjectId(registration_id)})
+
+        if not registration:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Registration not found"
+            )
+
+        if str(registration["volunteer_id"]) != volunteer_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to unregister from this event",
+            )
+
+        await self.registrations.update_one(
+            {"_id": ObjectId(registration_id)},
+            {"$set": {"registration_status": RegistrationStatus.UNREGISTERED}},
+        )
+        updated_doc = await self.registrations.find_one({"_id": ObjectId(registration_id)})
+        return Registration(**updated_doc)
+
+    async def check_in_registration(self, volunteer_id: str, event_id: str) -> Registration:
+        await self.registrations.update_one(
+            {"volunteer_id": ObjectId(volunteer_id), "event_id": ObjectId(event_id)},
+            {"$set": {"clocked_in": datetime.now()}},
+        )
+        updated_doc = await self.registrations.find_one(
+            {"volunteer_id": ObjectId(volunteer_id), "event_id": ObjectId(event_id)}
+        )
+        return Registration(**updated_doc)
+
+    async def check_out_registration(self, volunteer_id: str, event_id: str) -> Registration:
+        await self.registrations.update_one(
+            {"volunteer_id": ObjectId(volunteer_id), "event_id": ObjectId(event_id)},
+            {
+                "$set": {
+                    "clocked_out": datetime.now(),
+                    "registration_status": RegistrationStatus.COMPLETED,
+                }
+            },
+        )
+        updated_doc = await self.registrations.find_one(
+            {"volunteer_id": ObjectId(volunteer_id), "event_id": ObjectId(event_id)}
+        )
+        return Registration(**updated_doc)
+
+
+registration_model = RegistrationModel.get_instance()

@@ -1,0 +1,202 @@
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+
+from app.api.endpoints.user import get_current_user
+from app.models.organization import org_model
+from app.models.user import user_model
+from app.schemas.organization import (
+    CreateOrganizationRequest,
+    Organization,
+    OrganizationStatus,
+    UpdateOrganizationRequest,
+)
+from app.schemas.s3 import PresignedUrlResponse
+from app.schemas.user import User, UserType
+from app.services.geocoding import geocoding_service
+from app.services.s3 import s3_service
+
+router = APIRouter()
+
+
+@router.get("/me", response_model=Organization)
+async def get_self(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Organization:
+    return await org_model.get_organization_by_id(current_user.entity_id)
+
+
+@router.get("/all", response_model=list[Organization])
+async def get_organizations(
+    sort_by: Annotated[Literal["name", "status", "distance"], Query()] = "name",
+    sort_dir: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    statuses: Annotated[
+        list[OrganizationStatus] | None, Query(description="Allowed organization statuses")
+    ] = None,
+    lat: Annotated[float | None, Query(ge=-90, le=90)] = None,
+    lng: Annotated[float | None, Query(ge=-180, le=180)] = None,
+    distance_km: Annotated[float | None, Query(gt=0, le=500)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+) -> list[Organization]:
+    return await org_model.get_all_organizations(
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        statuses=statuses,
+        lat=lat,
+        lng=lng,
+        distance_km=distance_km,
+        page=page,
+        limit=limit,
+    )
+
+
+@router.get("/search", response_model=list[Organization])
+async def search_organizations(
+    q: Annotated[str | None, Query(description="Search term (name, description, keywords)")] = None,
+    lat: Annotated[float | None, Query(ge=-90, le=90)] = None,
+    lng: Annotated[float | None, Query(ge=-180, le=180)] = None,
+    distance_km: Annotated[float | None, Query(gt=0, le=500)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+) -> list[Organization]:
+    return await org_model.search_organizations(
+        q=q, lat=lat, lng=lng, distance_km=distance_km, page=page, limit=limit
+    )
+
+
+@router.get("/{org_id}", response_model=Organization)
+async def get_organization_by_id(org_id: str) -> Organization:
+    organization = await org_model.get_organization_by_id(org_id)
+
+    if not organization:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+
+    return organization
+
+
+@router.post("/new", response_model=Organization)
+async def create_organization(
+    org: Annotated[CreateOrganizationRequest, Body(...)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Organization:
+    if current_user.user_type != UserType.ORGANIZATION:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only users with organization role can create a organization",
+        )
+
+    if current_user.entity_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You have already been associated with a organization",
+        )
+
+    if not org.address or not org.address.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Address is required to create an organization",
+        )
+
+    try:
+        location = await geocoding_service.location_to_coordinates(org.address)
+    except HTTPException as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Invalid address: {e.detail}. "
+                "Please provide a valid address that can be geocoded."
+            ),
+        ) from e
+
+    return await org_model.create_organization(org, current_user.id, location)
+
+
+@router.put("/{org_id}", response_model=Organization)
+async def update_organization(
+    org_id: str,
+    org: Annotated[UpdateOrganizationRequest, Body(...)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Organization:
+    if current_user.user_type != UserType.ADMIN:
+        if current_user.entity_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You are not associated with any organization",
+            )
+
+        if not await user_model.owns_entity(current_user.id, org_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to update this organization",
+            )
+
+    location = await geocoding_service.location_to_coordinates(org.address) if org.address else None
+
+    return await org_model.update_organization(org_id, org, location)
+
+
+@router.delete("/{org_id}", response_model=None)
+async def delete_organization(
+    org_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    if current_user.entity_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You are not associated with any organization",
+        )
+
+    if not await user_model.owns_entity(current_user.id, org_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to update this organization",
+        )
+
+    return await org_model.delete_organization(org_id)
+
+
+# Generate a pre-signed URL for an organization image and store the S3 key in MongoDB
+@router.get("/{org_id}/upload-url", response_model=PresignedUrlResponse)
+async def get_organization_upload_url(
+    org_id: str,
+    filename: str,
+    filetype: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    if current_user.user_type not in [UserType.ORGANIZATION, UserType.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only users with organization role can upload an organization image",
+        )
+
+    if current_user.user_type != UserType.ADMIN:
+        if not await user_model.owns_entity(current_user.id, org_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to update this organization",
+            )
+
+    url, new_s3_key = s3_service.generate_presigned_url(
+        filename, content_type=filetype, dir_prefix=f"organizations/{org_id}"
+    )
+
+    await org_model.update_organization_image(org_id, new_s3_key)
+
+    return PresignedUrlResponse(
+        upload_url=url,
+        file_url=new_s3_key,
+    )
+
+
+# Get an organization image via a pre-signed URL
+@router.get("/{org_id}/image")
+async def get_organization_image(org_id: str):
+    organization = await org_model.get_organization_by_id(org_id)
+    if not organization or not organization.image_s3_key:
+        raise HTTPException(status_code=404, detail="Image not found")
+    file_type = organization.image_s3_key.split(".")[-1]
+    presigned_url = s3_service.get_presigned_url(
+        organization.image_s3_key, content_type=f"image/{file_type}"
+    )
+    return {"url": presigned_url}

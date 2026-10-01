@@ -1,0 +1,36 @@
+import api from '@/api';
+import { AuthUser, CreateUserRequest, LoginResponse } from '@/types/api/user';
+
+async function login(params: {
+  username: string;
+  password: string;
+}): Promise<LoginResponse> {
+  const response = await api.post('/user/token', params, {
+    headers: { 'Content-Type': 'application/json' },
+  });
+  return response.data as LoginResponse;
+}
+
+async function logout(): Promise<void> {
+  await api.post('/user/logout');
+}
+
+async function resetPassword(params: {
+  currentPassword: string;
+  newPassword: string;
+}): Promise<void> {
+  await api.post('/user/reset-password', params, {
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+async function createUser(params: CreateUserRequest): Promise<AuthUser> {
+  const response = await api.post('/user/', params, {});
+  return response.data;
+}
+
+export const userService = {
+  login,
+  logout,
+  resetPassword,
+  createUser,
+};

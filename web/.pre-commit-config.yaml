@@ -1,0 +1,16 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fe-lint-fix
+        name: frontend lint:fix
+        entry: bash -lc 'npm --prefix frontend run lint:fix'
+        language: system
+        pass_filenames: false
+        files: ^frontend/
+
+      - id: fe-prettier-check
+        name: frontend format:check
+        entry: bash -lc 'npm --prefix frontend run format:check'
+        language: system
+        pass_filenames: false
+        files: ^frontend/

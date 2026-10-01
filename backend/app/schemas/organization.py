@@ -1,0 +1,52 @@
+from enum import Enum
+
+from bson import ObjectId
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+
+from app.schemas.location import Location
+
+
+class OrganizationStatus(str, Enum):
+    APPROVED = "APPROVED"
+    PENDING = "PENDING"
+    REJECTED = "REJECTED"
+    DELETED = "DELETED"
+
+
+class Organization(BaseModel):
+    id: str = Field(validation_alias=AliasChoices("_id", "id"), serialization_alias="id")
+    name: str
+    description: str
+    status: OrganizationStatus
+    address: str | None = None
+    location: Location | None = None
+    image_s3_key: str | None = None
+    website: str | None = None
+    phone_number: str | None = None
+
+    class Config:
+        from_attributes = True
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def convert_object_id_to_str(cls, value):
+        if isinstance(value, ObjectId):
+            return str(value)
+        return value
+
+
+class CreateOrganizationRequest(BaseModel):
+    name: str
+    description: str
+    address: str
+    website: str | None = None
+    phone_number: str | None = None
+
+
+class UpdateOrganizationRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: OrganizationStatus | None = None
+    address: str | None = None
+    website: str | None = None
+    phone_number: str | None = None

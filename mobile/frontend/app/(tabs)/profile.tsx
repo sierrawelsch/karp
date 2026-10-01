@@ -1,0 +1,260 @@
+/* eslint-disable react-hooks/rules-of-hooks */
+
+import {
+  View,
+  Text,
+  ScrollView,
+  StyleSheet,
+  Pressable,
+  RefreshControl,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useProfile } from '@/hooks/useProfile';
+import { ProfileAvatar } from '@/components/profile/ProfileAvatar';
+import { LevelProgress } from '@/components/profile/LevelProgress';
+import { FishTank } from '@/components/profile/FishTank';
+import { StatCard } from '@/components/profile/StatCard';
+import { ProfileEventCard } from '@/components/profile/ProfileEventCard';
+import { LoadingScreen } from '@/components/LoadingScreen';
+import { Colors } from '@/constants/Colors';
+import { Fonts } from '@/constants/Fonts';
+import { useAuth } from '@/context/AuthContext';
+import { BoatFooter } from '@/components/profile/BoatFooter';
+
+export default function ProfileScreen() {
+  const router = useRouter();
+  const { isGuest, clearGuestMode } = useAuth();
+
+  const handleSignIn = () => {
+    clearGuestMode();
+    router.push('/login');
+  };
+  if (isGuest) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text style={styles.errorText}>
+          Sign in or make an account to check your profile
+        </Text>
+        <Pressable style={{ marginTop: 16 }} onPress={handleSignIn}>
+          <Text style={styles.signUpLink}>Sign In Now</Text>
+        </Pressable>
+      </View>
+    );
+  }
+  // eslint-disable-next-line
+  const { profileData, upcomingEvents, loading, refreshing, handleRefresh } =
+    useProfile();
+
+  if (loading) {
+    return <LoadingScreen text="Loading profile..." />;
+  }
+
+  // eslint-disable-next-line
+  const { user } = useAuth();
+
+  if (!profileData) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text style={styles.errorText}>Failed to load profile</Text>
+      </View>
+    );
+  }
+
+  const { volunteer, stats } = profileData;
+
+  return (
+    <SafeAreaView
+      style={styles.container}
+      edges={['top', 'bottom', 'left', 'right']}
+    >
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
+      >
+        <View style={styles.header}>
+          <View style={styles.headerSpacer} />
+          <Pressable
+            onPress={() => router.push('/profile/settings')}
+            style={styles.settingsButton}
+          >
+            <Ionicons
+              name="settings-outline"
+              size={24}
+              color={Colors.light.text}
+            />
+          </Pressable>
+        </View>
+
+        <View style={styles.profileSection}>
+          <ProfileAvatar
+            firstName={volunteer.firstName}
+            lastName={volunteer.lastName}
+            volunteerId={volunteer.id}
+          />
+          <Text style={styles.name}>
+            {volunteer.firstName} {volunteer.lastName}
+          </Text>
+          <Text style={styles.levelLabel}>@{user?.username || ''}</Text>
+        </View>
+
+        <FishTank
+          volunteerId={volunteer.id}
+          refreshKey={refreshing ? Date.now() : undefined}
+        />
+
+        <LevelProgress level={stats.level} progress={stats.levelProgress} />
+
+        <View style={styles.statsContainer}>
+          <StatCard
+            title="Total Hours Spent Volunteering"
+            value={`${Math.round(stats.totalHours) === 1 ? '1 Hour' : `${Math.round(stats.totalHours)} Hours`}`}
+            fullWidth
+          />
+        </View>
+
+        <View style={styles.eventsSection}>
+          <Text style={styles.sectionTitle}>Events</Text>
+
+          {upcomingEvents.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateText}>
+                No upcoming events. Sign up for events to get started!
+              </Text>
+            </View>
+          ) : (
+            <>
+              {upcomingEvents.map(event => (
+                <ProfileEventCard
+                  key={event.id}
+                  event={event}
+                  onPress={event => router.push(`/events/${event.id}/info`)}
+                  onCheckIn={() => router.push('/scan?type=check-in')}
+                  onCheckOut={() => router.push('/scan?type=checkout')}
+                />
+              ))}
+            </>
+          )}
+          <Pressable
+            onPress={() => router.push('/profile/events/past')}
+            style={styles.seePastButton}
+          >
+            <Text style={styles.seePastText}>See past events</Text>
+          </Pressable>
+        </View>
+        <BoatFooter />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: Colors.light.eggshellWhite,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.light.eggshellWhite,
+  },
+  errorText: {
+    fontFamily: Fonts.regular_400,
+    fontSize: 16,
+    color: Colors.light.errorText,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 20,
+  },
+  headerSpacer: {
+    width: 40,
+  },
+  settingsButton: {
+    width: 35,
+    height: 35,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  profileSection: {
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  name: {
+    fontFamily: Fonts.regular_400,
+    fontSize: 20,
+    fontWeight: '500',
+    color: Colors.light.text,
+    marginTop: 20,
+  },
+  levelLabel: {
+    fontFamily: Fonts.regular_400,
+    fontSize: 18,
+    color: Colors.light.textSecondary,
+    marginTop: 6,
+  },
+  statsContainer: {
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'stretch',
+    gap: 0,
+    marginBottom: 26,
+    width: '100%',
+  },
+  eventsSection: {
+    paddingBottom: 24,
+  },
+  sectionTitle: {
+    fontFamily: Fonts.regular_400,
+    fontSize: 20,
+    fontWeight: '500',
+    color: Colors.light.text,
+    marginBottom: 12,
+    width: '100%',
+  },
+  emptyState: {
+    paddingHorizontal: 32,
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  emptyStateText: {
+    fontFamily: Fonts.light_300,
+    fontSize: 14,
+    color: Colors.light.textSecondary,
+    textAlign: 'center',
+  },
+  seePastButton: {
+    marginTop: 10,
+    paddingTop: 5,
+    paddingBottom: 100,
+    alignItems: 'flex-end',
+    width: '95%',
+    alignSelf: 'center',
+  },
+  seePastText: {
+    fontFamily: Fonts.regular_400,
+    fontSize: 16,
+    color: Colors.light.text,
+    textDecorationLine: 'underline',
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 80, // gives room for the bottom button
+  },
+  signUpLink: {
+    fontSize: 14,
+    color: Colors.light.text,
+    textDecorationLine: 'underline',
+    fontFamily: Fonts.regular_400,
+  },
+});
