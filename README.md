@@ -66,6 +66,6 @@ React Native / Expo
 
 ![Logo](./images/logo.png)
 ![User Profile](./images/user-profile.png)
+![Sign up for Event](./images/event-signup.png)
 ![Event Feed](./images/event-feed.png)
-![Sign up for Event](./images/profile.png)
 ![Gift Shop](./images/gift-shop.png)
